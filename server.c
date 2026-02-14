@@ -5,7 +5,8 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
-#include <fcntl.h> // For open()
+#include <fcntl.h>
+#include <pthread.h>
 #include "http.h"
 
 #define PORT 8080
@@ -14,7 +15,6 @@
 const char *get_mime_type(const char *filename) {
     const char *dot = strrchr(filename, '.');
     if (!dot) return "text/plain";
-    
     if (strcmp(dot, ".html") == 0) return "text/html";
     if (strcmp(dot, ".css") == 0)  return "text/css";
     if (strcmp(dot, ".js") == 0)   return "application/javascript";
@@ -22,13 +22,11 @@ const char *get_mime_type(const char *filename) {
     if (strcmp(dot, ".jpeg") == 0) return "image/jpeg";
     if (strcmp(dot, ".png") == 0)  return "image/png";
     if (strcmp(dot, ".gif") == 0)  return "image/gif";
-    
     return "text/plain";
 }
 
 void send_file(int client_socket, const char *filename) {
     FILE *file = fopen(filename, "rb");
-    
     if (file == NULL) {
         char *not_found = "HTTP/1.1 404 Not Found\r\n\r\n404: File Not Found";
         write(client_socket, not_found, strlen(not_found));
@@ -40,7 +38,6 @@ void send_file(int client_socket, const char *filename) {
     fseek(file, 0, SEEK_SET);
 
     const char *mime_type = get_mime_type(filename);
-
     char header[BUFFER_SIZE];
     snprintf(header, sizeof(header), 
              "HTTP/1.1 200 OK\r\n"
@@ -55,12 +52,37 @@ void send_file(int client_socket, const char *filename) {
     while ((bytes_read = fread(file_buffer, 1, sizeof(file_buffer), file)) > 0) {
         write(client_socket, file_buffer, bytes_read);
     }
-
     fclose(file);
 }
 
+void *handle_client(void *arg) {
+    int client_socket = *((int *)arg);
+    free(arg);
+
+    char buffer[BUFFER_SIZE] = {0};
+    read(client_socket, buffer, BUFFER_SIZE);
+    
+    HTTP_Request req;
+    parse_request(buffer, &req);
+    
+    if (strcmp(req.path, "/sleep") == 0) {
+        printf("Client requested /sleep. Sleeping for 10 seconds...\n");
+        sleep(10);
+        printf("Sleep finished! Sending response.\n");
+        send_file(client_socket, "index.html");
+    } 
+    else if (strcmp(req.path, "/") == 0) {
+        send_file(client_socket, "index.html");
+    } else {
+        send_file(client_socket, req.path + 1);
+    }
+
+    close(client_socket);
+    return NULL;
+}
+
 int main() {
-    int server_fd, new_socket;
+    int server_fd;
     struct sockaddr_in address;
     int addrlen = sizeof(address);
     int opt = 1;
@@ -76,25 +98,23 @@ int main() {
     printf("Server listening on port %d...\n", PORT);
 
     while (1) {
-        if ((new_socket = accept(server_fd, (struct sockaddr *)&address, (socklen_t*)&addrlen)) < 0) {
+        int *new_socket = malloc(sizeof(int));
+        if ((*new_socket = accept(server_fd, (struct sockaddr *)&address, (socklen_t*)&addrlen)) < 0) {
             perror("Accept failed");
+            free(new_socket);
             continue;
         }
 
-        char buffer[BUFFER_SIZE] = {0};
-        read(new_socket, buffer, BUFFER_SIZE);
-        
-        HTTP_Request req;
-        parse_request(buffer, &req);
-        
-        if (strcmp(req.path, "/") == 0) {
-            send_file(new_socket, "index.html");
-        } else {
-            send_file(new_socket, req.path + 1);
+        pthread_t thread_id;
+        if (pthread_create(&thread_id, NULL, handle_client, (void*)new_socket) < 0) {
+            perror("Could not create thread");
+            free(new_socket);
+            continue;
         }
 
-        close(new_socket);
+        pthread_detach(thread_id);
     }
+    
     close(server_fd);
     return 0;
 }
