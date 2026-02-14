@@ -5,6 +5,7 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include "http.h" 
 
 #define PORT 8080
 #define BUFFER_SIZE 1024
@@ -14,37 +15,20 @@ int main() {
     int new_socket;
     struct sockaddr_in address;
     int addrlen = sizeof(address);
-    
-    if ((server_fd = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
-        perror("Socket creation failed");
-        exit(EXIT_FAILURE);
-    }
-
     int opt = 1;
-    if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt))) {
-        perror("setsockopt failed");
-        exit(EXIT_FAILURE);
-    }
 
+    server_fd = socket(AF_INET, SOCK_STREAM, 0);
+    setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
     address.sin_family = AF_INET;
     address.sin_addr.s_addr = INADDR_ANY;
     address.sin_port = htons(PORT);
-
-    if (bind(server_fd, (struct sockaddr *)&address, sizeof(address)) < 0) {
-        perror("Bind failed");
-        exit(EXIT_FAILURE);
-    }
-
-    if (listen(server_fd, 10) < 0) {
-        perror("Listen failed");
-        exit(EXIT_FAILURE);
-    }
-
+    bind(server_fd, (struct sockaddr *)&address, sizeof(address));
+    listen(server_fd, 10);
+    
     printf("Server listening on port %d...\n", PORT);
 
     while (1) {
         printf("\nWaiting for a connection...\n");
-
         if ((new_socket = accept(server_fd, (struct sockaddr *)&address, (socklen_t*)&addrlen)) < 0) {
             perror("Accept failed");
             exit(EXIT_FAILURE);
@@ -52,15 +36,19 @@ int main() {
 
         char buffer[BUFFER_SIZE] = {0};
         read(new_socket, buffer, BUFFER_SIZE);
-        printf("Received request:\n%s\n", buffer);
+        
+        HTTP_Request req;
+        parse_request(buffer, &req);
+        
+        printf("Method: %s\n", req.method);
+        printf("Path: %s\n", req.path);
+        printf("Version: %s\n", req.version);
+        // -------------------------
 
         char *hello = "HTTP/1.1 200 OK\nContent-Type: text/plain\nContent-Length: 12\n\nHello world!";
         write(new_socket, hello, strlen(hello));
-        printf("Response sent!\n");
-
         close(new_socket);
     }
-    
     close(server_fd);
     return 0;
 }
