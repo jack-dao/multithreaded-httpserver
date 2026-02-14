@@ -8,9 +8,13 @@
 #include <fcntl.h>
 #include <pthread.h>
 #include "http.h"
+#include "queue.h"
 
 #define PORT 8080
 #define BUFFER_SIZE 1024
+#define THREAD_POOL_SIZE 20
+
+queue_t client_queue;
 
 const char *get_mime_type(const char *filename) {
     const char *dot = strrchr(filename, '.');
@@ -55,10 +59,7 @@ void send_file(int client_socket, const char *filename) {
     fclose(file);
 }
 
-void *handle_client(void *arg) {
-    int client_socket = *((int *)arg);
-    free(arg);
-
+void handle_client(int client_socket) {
     char buffer[BUFFER_SIZE] = {0};
     read(client_socket, buffer, BUFFER_SIZE);
     
@@ -66,18 +67,28 @@ void *handle_client(void *arg) {
     parse_request(buffer, &req);
     
     if (strcmp(req.path, "/sleep") == 0) {
-        printf("Client requested /sleep. Sleeping for 10 seconds...\n");
+        printf("Thread %lu: Sleeping for 10 seconds...\n", (unsigned long)pthread_self());
         sleep(10);
-        printf("Sleep finished! Sending response.\n");
+        printf("Thread %lu: Woke up!\n", (unsigned long)pthread_self());
         send_file(client_socket, "index.html");
-    } 
-    else if (strcmp(req.path, "/") == 0) {
+    } else if (strcmp(req.path, "/") == 0) {
         send_file(client_socket, "index.html");
     } else {
         send_file(client_socket, req.path + 1);
     }
 
     close(client_socket);
+}
+
+void *thread_function(void *arg) {
+    (void)arg;
+    while (1) {
+        int *pclient = dequeue(&client_queue);
+        if (pclient != NULL) {
+            handle_client(*pclient);
+            free(pclient);
+        }
+    }
     return NULL;
 }
 
@@ -86,6 +97,14 @@ int main() {
     struct sockaddr_in address;
     int addrlen = sizeof(address);
     int opt = 1;
+
+    init_queue(&client_queue);
+
+    pthread_t thread_pool[THREAD_POOL_SIZE];
+    for (int i = 0; i < THREAD_POOL_SIZE; i++) {
+        pthread_create(&thread_pool[i], NULL, thread_function, NULL);
+    }
+    printf("Thread Pool Initialized with %d workers.\n", THREAD_POOL_SIZE);
 
     server_fd = socket(AF_INET, SOCK_STREAM, 0);
     setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
@@ -105,14 +124,7 @@ int main() {
             continue;
         }
 
-        pthread_t thread_id;
-        if (pthread_create(&thread_id, NULL, handle_client, (void*)new_socket) < 0) {
-            perror("Could not create thread");
-            free(new_socket);
-            continue;
-        }
-
-        pthread_detach(thread_id);
+        enqueue(&client_queue, new_socket);
     }
     
     close(server_fd);
